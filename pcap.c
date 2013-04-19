@@ -44,7 +44,7 @@ THE POSSIBILITY OF SUCH DAMAGE.
 #include "lualib.h"
 
 #ifdef WIN32
-#include <wt-win-common.h>
+//#include <wt-win-common.h>
 #endif
 
 static double tv2secs(struct timeval* tv)
