@@ -3,10 +3,10 @@
 	<ActiveTarget name="Debug" />
 	<File name="pcap.c" open="1" top="1" tabpos="1" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
 		<Cursor>
-			<Cursor1 position="3087" topLine="101" />
+			<Cursor1 position="19858" topLine="739" />
 		</Cursor>
 	</File>
-	<File name="wt-common.c" open="1" top="0" tabpos="3" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
+	<File name="wt-common.c" open="0" top="0" tabpos="3" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
 		<Cursor>
 			<Cursor1 position="1510" topLine="31" />
 		</Cursor>
