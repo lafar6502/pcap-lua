@@ -227,6 +227,8 @@ static int lpcap_open_live(lua_State *L)
     return checkpcapopen(L, cap, errbuf);
 }
 
+//returns an array with all network devices
+//found on the system. name and description is returned for each device.
 static int lpcap_findalldevs(lua_State *L)
 {
     pcap_if_t *alldevs;
@@ -256,7 +258,7 @@ static int lpcap_findalldevs(lua_State *L)
         lua_pushstring(L, d->description);
         lua_settable(L, -3);
         lua_settable(L, -3);
-        for (v = d->addresses; v; v = v->next)
+
 	}
 	return 1;
 }
@@ -448,6 +450,42 @@ static int pushpkt(lua_State* L, struct pcap_pkthdr* pkt_header, const u_char* p
     lua_pushinteger(L, pkt_header->len);
 
     return 3;
+}
+
+//we assume the callback function is at the top of the stack
+static void pcap_callback_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *bytes)
+{
+    printf("T%d\n", GetCurrentThread());
+    lua_State* L = (lua_State*) user;
+    lua_pushvalue(L, -1); //duplicate the function
+    int nargs = pushpkt(L, h, bytes);
+    lua_call(L, nargs, 1);
+    if (lua_isnumber(L, -1))
+    {
+        int n = lua_tonumber(L, -1);
+        if (n != 0)
+        {
+            //printf("breaking the loop\n");
+            pcap_t* cap = checkpcap(L);
+            pcap_breakloop(cap);
+        }
+    }
+    lua_pop(L, 1);
+}
+//loop function will invoke
+//a callback for each captured packet
+static int lpcap_loop(lua_State* L)
+{
+    pcap_t* cap = checkpcap(L);
+    int cnt = (int) lua_tonumber(L, -2);
+    if (!lua_isfunction(L, -1))
+    {
+        luaL_error(L, "callback function expected");
+    }
+    printf("LOOP T%d, CNT: %d\n", GetCurrentThread(), cnt);
+
+    int n = pcap_loop(cap, cnt, pcap_callback_handler, L);
+    return 0;
 }
 
 static int lpcap_next(lua_State* L)
@@ -714,6 +752,7 @@ static const luaL_reg pcap_methods[] =
 #ifndef WIN32
     {"inject", lpcap_inject},
 #endif
+    {"loop", lpcap_loop},
     {NULL, NULL}
 };
 

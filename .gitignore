@@ -4,3 +4,5 @@ cap*.pcap
 *.test
 tstpcap-*
 debian
+/bin/
+/obj/
