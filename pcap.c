@@ -227,7 +227,39 @@ static int lpcap_open_live(lua_State *L)
     return checkpcapopen(L, cap, errbuf);
 }
 
+static int lpcap_findalldevs(lua_State *L)
+{
+    pcap_if_t *alldevs;
+	pcap_if_t *d;
+	int inum;
+	int i=1;
+	pcap_t *adhandle;
+	char errbuf[PCAP_ERRBUF_SIZE];
 
+	/* Retrieve the device list */
+	if(pcap_findalldevs(&alldevs, errbuf) == -1)
+	{
+		luaL_error(L, errbuf);
+        return 0;
+	}
+	lua_newtable(L);
+    /* Print the list */
+	for(d=alldevs; d; d=d->next)
+	{
+
+	    lua_pushnumber(L, i++);
+        lua_newtable(L);
+        lua_pushstring(L, "name");
+        lua_pushstring(L, d->name);
+        lua_settable(L, -3);
+        lua_pushstring(L, "description");
+        lua_pushstring(L, d->description);
+        lua_settable(L, -3);
+        lua_settable(L, -3);
+        for (v = d->addresses; v; v = v->next)
+	}
+	return 1;
+}
 /*-
 -- cap = pcap.open_dead([linktype, [snaplen]])
 
@@ -662,6 +694,7 @@ static const luaL_reg pcap_module[] =
     {"open_dead", lpcap_open_dead},
     {"tv2secs", lpcap_tv2secs},
     {"secs2tv", lpcap_secs2tv},
+    {"findalldevs", lpcap_findalldevs},
     {NULL, NULL}
 };
 
