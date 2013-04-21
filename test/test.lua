@@ -104,9 +104,66 @@ pc:loop(1000, function(data, ts, len)
     local hdr = ffi.cast("ip_header", data + 14)
 end)
 --]]
+function string.startsWith(s1, s2)
+    return s1:sub(1, s2:len()) == s2
+end
+function string.lines(s)
+    local oidx = -2
+    local idx = nil
+    local ret = {}
+    while true do
+        idx = string.find(s, '\r\n', oidx + 2, false)
+        if idx then
+            table.insert(ret, s:sub(oidx + 2, idx))
+        else
+            table.insert(ret, s:sub(oidx + 2, s:len()))
+            break
+        end
+        oidx = idx
+    end
+    return ret
+end
+
+function check_sip(content)
+    local s = content
+    if content:len() > 100 then
+        s = content:sub(1, 100)
+    end
+    local si, ei = s:find(' ')
+    if si == nil then
+        return false
+    end
+    print('si:'..si..',ei:'..ei)
+    local cmd = s:sub(1, si - 1)
+    local cmdarr = {"INVITE ", "OPTIONS ", "NOTIFY ", "BYE ", "SIP ", "REGISTER ", "ACK "}
+    return true, cmd
+    
+end
+
+function process_packet(tstamp, iphdr, isUdp, udphdr, payload, size_payload, rawpacket)
+    local content = ffi.string(payload, size_payload)
+    if isUdp then
+        if udphdr.sport == 5060 or udphdr.dport == 5060 then 
+            print(addrs(iphdr.saddr)..":"..udphdr.sport.." -> "..addrs(iphdr.daddr)..":"..udphdr.dport.." UDP ")
+            --print(content)
+            local t, cmd = check_sip(content)
+            if t then
+                print("SIP "..cmd)
+                if cmd == "INVITE" or cmd == "SIP" or cmd == "ACK" then
+                    local tbl = content:lines()
+                    for i, v in ipairs(tbl) do
+                        print(i.."\t:"..v)
+                    end
+                end
+            end
+        end
+    else
+    
+    end
+end
 
 for pkt, ts, len in pc.next, pc do
-    print("ts: "..ts..", len: "..len)
+    --print("ts: "..ts..", len: "..len)
     local data = ffi.cast("char *", pkt)
     local hdr = ffi.cast("ip_header *", data + 14)
     
@@ -120,14 +177,16 @@ for pkt, ts, len in pc.next, pc do
         local payload = data + 14 + ip_len + size_tcp;
         local size_payload = ntohs(hdr.tlen) - (14 + size_tcp);
         print('payload is '..payload[0]..' '..payload[1]..' '..payload[2])
-        local content = ffi.string(payload, size_payload)
-        print(content)
+        process_packet(ts, hdr, false, tcphdr, payload, size_payload, pkt)
     elseif hdr.proto == 17 then
         local udphdr = ffi.cast("udp_header2 *", data + 14 + ip_len)
         bswap_bytes(udphdr.sport)
         bswap_bytes(udphdr.dport)
         udphdr = ffi.cast("udp_header*", udphdr)
-        print(addrs(hdr.saddr)..":"..udphdr.sport.." -> "..addrs(hdr.daddr)..":"..udphdr.dport.." UDP ")
+        local size_udp = ffi.sizeof("udp_header")
+        local payload = data + 14 + ip_len + size_udp
+        local size_payload = ntohs(hdr.tlen) - (14 + size_udp);
+        process_packet(ts, hdr, true, udphdr, payload, size_payload, pkt)
         
     else
     end
