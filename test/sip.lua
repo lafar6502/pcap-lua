@@ -293,8 +293,9 @@ function check_rtp(payload, payload_size)
     local cc = bit.band(rthdr.b1, 0x0f)
     local x = bit.band(rthdr.b1, 0x10)
     local p = bit.band(rthdr.b1, 0x20)
+    if p ~= 0 or x ~= 0 then error() end
     local ptype = bit.band(rthdr.payload_type, 0x80)
-    print('RTP ver is '..ver..' and payload is '..ptype..' SEQ:'..ntohs(rthdr.seq)..',SSRC:'..ntohl(rthdr.ssrc)..' CC:'..cc..', X:'..x..',P:'..p)
+    print('RTP ver is '..ver..' and payload is '..ptype..' SEQ:'..ntohs(rthdr.seq)..',SSRC:'..ntohl(rthdr.ssrc)..' CC:'..cc..', X:'..x..',P:'..p..', rtp size: '..payload_size)
     return ffi.sizeof('rtp_header') + cc * ffi.sizeof('uint32_t'), rthdr
 end
 
@@ -304,7 +305,7 @@ function process_rtp_packet(tstamp, ip, isUdp, hdr, payload, payload_size, rawpa
     local hdsize, rthdr = check_rtp(payload, payload_size)
     if hdsize == nil then return nil end
     
-    print('\r\nDoing RTP: '..addrs(ip.saddr)..":"..hdr.sport.." -> "..addrs(ip.daddr)..":"..hdr.dport)
+    print('\r\nDoing RTP: '..addrs(ip.saddr)..":"..hdr.sport.." -> "..addrs(ip.daddr)..":"..hdr.dport..', HDSIZE:'..hdsize)
     local cid = g_rtp[rthdr.ssrc]
     if cid == nil then
         local s1 = addrs(ip.saddr)..":"..hdr.sport
@@ -327,16 +328,16 @@ function process_rtp_packet(tstamp, ip, isUdp, hdr, payload, payload_size, rawpa
     local fh = nil
     if ses.orig_ssrc == rthdr.ssrc then
         if ses.orig_file == nil then
-            g_fcnt = g_fcnt + 1
-            ses.orig_file = io.open("orig_"..g_fcnt..".wav", 'wb')
-            print('opened orig file')
+            ses.orig_file_name = "o_"..cid:sub(1,15)..".wav"
+            ses.orig_file = io.open(ses.orig_file_name, 'wb')
+            print('opened orig file '..ses.orig_file_name)
         end
         fh = ses.orig_file
     else
         if ses.dest_file == nil then
-            g_fcnt = g_fcnt + 1
-            ses.dest_file = io.open("dest_"..g_fcnt..".wav", 'wb')
-            print('opened dest file')
+            ses.dest_file_name = "d_"..cid:sub(1,15)..".wav"
+            ses.dest_file = io.open(ses.dest_file_name, 'wb')
+            print('opened dest file '..ses.dest_file_name)
         end
         fh = ses.dest_file
     end
@@ -367,7 +368,6 @@ for pkt, ts, len in pc.next, pc do
     --print("ts: "..ts..", len: "..len)
     local data = ffi.cast("char *", pkt)
     local hdr = ffi.cast("ip_header *", data + 14)
-    
     local ip_len =  bit.band(hdr.ver_ihl, 0xf) * 4
     
     if hdr.proto == 6 then
@@ -375,8 +375,9 @@ for pkt, ts, len in pc.next, pc do
         local size_tcp = TH_OFF(tcphdr)*4;
         print(addrs(hdr.saddr)..":"..tcphdr.sport.." -> "..addrs(hdr.daddr)..":"..tcphdr.dport.." TCP ")
         print('size tcp is '..size_tcp)
-        local payload = data + 14 + ip_len + size_tcp;
-        local size_payload = ntohs(hdr.tlen) - (14 + size_tcp);
+        local payoffset = ip_len + size_tcp
+        local payload = data + payoffset + 14;
+        local size_payload = ntohs(hdr.tlen) - payoffset
         print('payload is '..payload[0]..' '..payload[1]..' '..payload[2])
         process_packet(ts, hdr, false, tcphdr, payload, size_payload, pkt)
     elseif hdr.proto == 17 then
@@ -386,8 +387,11 @@ for pkt, ts, len in pc.next, pc do
         udphdr = ffi.cast("udp_header*", udphdr)
         local size_udp = ffi.sizeof("udp_header")
         local payload = data + 14 + ip_len + size_udp
+        local size_payload = ntohs(hdr.tlen) - (ip_len + size_udp)
+        --print('PKT Len: '..len..', IP HDR len: '..ip_len..', IP pay len: '..ntohs(hdr.tlen)..', payload size: '..size_payload)
         --print('PAY:'..payload[0]..'.'..payload[1]..'.'..payload[2]..'.'..payload[3])
-        local size_payload = ntohs(hdr.tlen) - (14 + size_udp);
+        
+        
         process_packet(ts, hdr, true, udphdr, payload, size_payload, pkt)
         
     else
