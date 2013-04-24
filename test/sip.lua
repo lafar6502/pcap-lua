@@ -52,6 +52,15 @@ typedef struct tcp_header {
     uint16_t sum;     /* checksum */
     uint16_t urp;     /* urgent pointer */
 } tcp_header;
+
+typedef struct rtp_header {
+    uint8_t b1;
+    uint8_t payload_type;
+    uint16_t seq;
+    uint32_t tstamp;
+    uint32_t ssrc;
+    /*uint32_t csrc;*/
+} rtp_header;
 ]]
 --[[#define TH_OFF(th)  (((th)->th_offx2 & 0xf0) >> 4)
     #define TH_FIN 0x01
@@ -263,18 +272,33 @@ function process_sip_packet(tstamp, ip, isUdp, hdr, payload, payload_size, rawpa
     end     
 end
 
-function process_rtp_packet(tstamp, ip, isUdp, hdr, payload, payload_size, rawpacket)
+function check_rtp(payload, payload_size)
+    if payload_size < ffi.sizeof('rtp_header') then return nil end
+    local rthdr = ffi.cast('rtp_header*', payload)
+    local ver = bit.band(rthdr.b1, 0xc0)
+    if ver ~= 0x80 then return nil end
+    local ptype = bit.band(rthdr.payload_type, 0x80)
+    --print('RTP ver is '..ver..' and payload is '..ptype..' SEQ:'..ntohs(rthdr.seq)..',SSRC:'..ntohl(rthdr.ssrc) )
+    return rthdr, ffi.cast('char*', payload + ffi.sizeof('rtp_header'))
+end
 
+function process_rtp_packet(tstamp, ip, isUdp, hdr, payload, payload_size, rawpacket)
+    print('\r\nDoing RTP: '..addrs(ip.saddr)..":"..hdr.sport.." -> "..addrs(ip.daddr)..":"..hdr.dport)
 end
 
 function process_packet(tstamp, iphdr, isUdp, udphdr, payload, size_payload, rawpacket)
     local content = ffi.string(payload, size_payload)
     if isUdp then
-        if udphdr.sport == 5060 or udphdr.dport == 5060 then 
-            print('\r\n'..addrs(iphdr.saddr)..":"..udphdr.sport.." -> "..addrs(iphdr.daddr)..":"..udphdr.dport.." UDP ")
-            --print(content)
-            local t, cmd = check_sip_command(content)
-            if t then process_sip_packet(tstamp, iphdr, isUdp, udphdr, payload, size_payload, rawpacket) end
+        local rtp = check_rtp(payload,size_payload)
+        if rtp then
+            process_rtp_packet(tstamp, iphdr, isUdp, udphdr, payload, size_payload, rawpacket)
+        else
+            if udphdr.sport == 5060 or udphdr.dport == 5060 then 
+                print('\r\n'..addrs(iphdr.saddr)..":"..udphdr.sport.." -> "..addrs(iphdr.daddr)..":"..udphdr.dport.." UDP ")
+                --print(content)
+                local t, cmd = check_sip_command(content)
+                if t then process_sip_packet(tstamp, iphdr, isUdp, udphdr, payload, size_payload, rawpacket) end
+            end
         end
     else
     end
