@@ -1,6 +1,7 @@
 local pcap = require("pcap")
 local ffi = require("ffi")
 local bit = require("bit")
+local lio = require("io")
 
 ffi.cdef[[
 /* 4 bytes IP address */
@@ -203,11 +204,13 @@ function get_sip_data(content)
 end
 
 g_sessions = {}
+g_rtp = {}
 
 -- after INVITE - register a new SIP session
 function register_sip_session(callId, seq, tstamp, rtp_addr, rtp_port, sipdata)
     local session = {CallID = callId, CSeq = seq, StartTS = tstamp, status='INVITED', rtp_caller = rtp_addr..':'..rtp_port}
     g_sessions[callId] = session
+    g_rtp[session.rtp_caller] = callId
 end
 
 -- SIP/20 200 OK after an invite, with SDP information
@@ -221,6 +224,7 @@ function register_sip_session_confirmation(callId, seq, rtp_addr, rtp_port)
     if ses.status == 'INVITED' then
         ses.status = 'CONFIRMED'
         ses.rtp_callee = rtp_addr..':'..rtp_port
+        g_rtp[ses.rtp_callee] = callId
         print('SESSION '..ses.CallID..' IS CONFIRMED')
     end
 end
@@ -239,6 +243,15 @@ function register_sip_session_bye(callId, seq)
     local ses = g_sessions[callId]
     if ses == nil then return end
     ses.status = 'BYE'
+    if ses.dest_file ~= nil then
+        ses.dest_file:close()
+        ses.dest_file = nil
+    end
+    if ses.orig_file ~= nil then
+        ses.orig_file:close()
+        ses.orig_file = nil
+    end
+    
     print('SESSION '..ses.CallID..' CLOSED')
 end
 
@@ -277,29 +290,75 @@ function check_rtp(payload, payload_size)
     local rthdr = ffi.cast('rtp_header*', payload)
     local ver = bit.band(rthdr.b1, 0xc0)
     if ver ~= 0x80 then return nil end
+    local cc = bit.band(rthdr.b1, 0x0f)
+    local x = bit.band(rthdr.b1, 0x10)
+    local p = bit.band(rthdr.b1, 0x20)
     local ptype = bit.band(rthdr.payload_type, 0x80)
-    --print('RTP ver is '..ver..' and payload is '..ptype..' SEQ:'..ntohs(rthdr.seq)..',SSRC:'..ntohl(rthdr.ssrc) )
-    return rthdr, ffi.cast('char*', payload + ffi.sizeof('rtp_header'))
+    print('RTP ver is '..ver..' and payload is '..ptype..' SEQ:'..ntohs(rthdr.seq)..',SSRC:'..ntohl(rthdr.ssrc)..' CC:'..cc..', X:'..x..',P:'..p)
+    return ffi.sizeof('rtp_header') + cc * ffi.sizeof('uint32_t'), rthdr
 end
 
+g_fcnt = 0
+
 function process_rtp_packet(tstamp, ip, isUdp, hdr, payload, payload_size, rawpacket)
+    local hdsize, rthdr = check_rtp(payload, payload_size)
+    if hdsize == nil then return nil end
+    
     print('\r\nDoing RTP: '..addrs(ip.saddr)..":"..hdr.sport.." -> "..addrs(ip.daddr)..":"..hdr.dport)
+    local cid = g_rtp[rthdr.ssrc]
+    if cid == nil then
+        local s1 = addrs(ip.saddr)..":"..hdr.sport
+        local d = 'orig_ssrc'
+        cid = g_rtp[s1]
+        if cid == nil then
+            s1 = addrs(ip.daddr)..':'..hdr.dport
+            cid = g_rtp[s1]
+            d = 'dest_ssrc'
+        end
+        if cid == nil then
+            print("call not found for this RTP")
+            return nil
+        end
+        g_rtp[rthdr.ssrc] = cid
+        g_sessions[cid][d] = rthdr.ssrc
+    end
+    local ses = g_sessions[cid]
+    ses.last_packet_ts = tstamp
+    local fh = nil
+    if ses.orig_ssrc == rthdr.ssrc then
+        if ses.orig_file == nil then
+            g_fcnt = g_fcnt + 1
+            ses.orig_file = io.open("orig_"..g_fcnt..".wav", 'wb')
+            print('opened orig file')
+        end
+        fh = ses.orig_file
+    else
+        if ses.dest_file == nil then
+            g_fcnt = g_fcnt + 1
+            ses.dest_file = io.open("dest_"..g_fcnt..".wav", 'wb')
+            print('opened dest file')
+        end
+        fh = ses.dest_file
+    end
+    local rtpayload = ffi.cast('char*', payload + hdsize)
+    local rtstr = ffi.string(ffi.cast('char*', payload + hdsize), payload_size - hdsize)
+    print('writing '..#rtstr..' bytes to file')
+    fh:write(rtstr)
+    fh:flush()
 end
 
 function process_packet(tstamp, iphdr, isUdp, udphdr, payload, size_payload, rawpacket)
     local content = ffi.string(payload, size_payload)
     if isUdp then
-        local rtp = check_rtp(payload,size_payload)
-        if rtp then
-            process_rtp_packet(tstamp, iphdr, isUdp, udphdr, payload, size_payload, rawpacket)
-        else
-            if udphdr.sport == 5060 or udphdr.dport == 5060 then 
-                print('\r\n'..addrs(iphdr.saddr)..":"..udphdr.sport.." -> "..addrs(iphdr.daddr)..":"..udphdr.dport.." UDP ")
-                --print(content)
-                local t, cmd = check_sip_command(content)
-                if t then process_sip_packet(tstamp, iphdr, isUdp, udphdr, payload, size_payload, rawpacket) end
-            end
+        process_rtp_packet(tstamp, iphdr, isUdp, udphdr, payload, size_payload, rawpacket)
+        
+        if udphdr.sport == 5060 or udphdr.dport == 5060 then 
+            print('\r\n'..addrs(iphdr.saddr)..":"..udphdr.sport.." -> "..addrs(iphdr.daddr)..":"..udphdr.dport.." UDP ")
+            --print(content)
+            local t, cmd = check_sip_command(content)
+            if t then process_sip_packet(tstamp, iphdr, isUdp, udphdr, payload, size_payload, rawpacket) end
         end
+    
     else
     end
 end
