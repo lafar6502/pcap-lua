@@ -88,8 +88,6 @@ end
 local ntohs = ffi.abi("le") and swap16 or function(x) return x end
 
 
-printx(ntohs(0x1234))
-
 local devs = pcap.findalldevs()
 print("Devices found: "..#devs)
 for k,v in ipairs(devs) do
@@ -97,34 +95,26 @@ for k,v in ipairs(devs) do
 end
 
 local pc = pcap.open_live(devs[4].name)
-pc:set_filter("ip and (udp or tcp)")
---[[
-pc:loop(1000, function(data, ts, len)
-    print("ts: "..ts..", len: "..len)
-    local hdr = ffi.cast("ip_header", data + 14)
-end)
---]]
+pc:set_filter("ip and udp")
+
 function string.startsWith(s1, s2)
     return s1:sub(1, s2:len()) == s2
 end
+
 function string.lines(s)
-    local oidx = -2
-    local idx = nil
-    local ret = {}
-    while true do
+    local oidx, idx, ret = -2, nil, {}
+    repeat
         idx = string.find(s, '\r\n', oidx + 2, false)
-        if idx then
-            table.insert(ret, s:sub(oidx + 2, idx))
-        else
-            table.insert(ret, s:sub(oidx + 2, s:len()))
-            break
-        end
+        table.insert(ret, s:sub(oidx + 2, idx and idx-1 or s:len()))
         oidx = idx
-    end
+    until not idx
     return ret
 end
-
-function check_sip(content)
+function string.trim(s)
+    return s:find'^%s*$' and '' or s:match'^%s*(.*%S)'
+end
+    
+function check_sip_command(content)
     local s = content
     if content:len() > 100 then
         s = content:sub(1, 100)
@@ -133,11 +123,123 @@ function check_sip(content)
     if si == nil then
         return false
     end
-    print('si:'..si..',ei:'..ei)
     local cmd = s:sub(1, si - 1)
     local cmdarr = {"INVITE ", "OPTIONS ", "NOTIFY ", "BYE ", "SIP ", "REGISTER ", "ACK "}
     return true, cmd
+end
+
+
+
+function parse_header(line)
+    local idx = line:find(':')
+    if idx ~= nil and idx > 0 then 
+        local name = line:sub(1, idx - 1)
+        local val = line:sub(idx + 1, #line)
+        return name, val:trim()
+    end
+    return nil
+end
+
+-- return IN address of the audio stream
+function get_sdp_audio_info(lines)
+    local ln = lines
+    if type(lines) == 'string' then ln = lines:lines() end
+    local dt = {}
+    for i,v in ipairs(ln) do
+        local s,e,p = v:find('m=audio (%d+)')
+        if s == 1 then dt.port = p end
+        s,e,p = v:find('c=IN IP4 (.+)')
+        if s == 1 then dt.ip = p end
+    end
+    return dt
+end
+
+--parses sip request headers and returns the header table plus packet payload (everything after the headers)
+function parse_sip_request(content)
+    local cs = content:find('\r\n\r\n')
+    local hdrpart = cs and content:sub(1, cs - 1) or content
+    local hdrdata = hdrpart:lines()
+    local i1 = hdrdata[1]:find(' ')
+    local hdr = {sipcommand = hdrdata[1]:sub(1,i1 - 1), sipcommand_args = hdrdata[1]:sub(i1 + 1, #hdrdata[1]), command=hdrdata[1]}
+    for i=2,#hdrdata do
+        local h,v = parse_header(hdrdata[i])
+        if h then hdr[h]=v end
+    end
+    local dpart = ""
+    if cs ~= nil then
+        local ce = #content
+        if hdr['Content-Length'] ~= nil then ce = cs + hdr['Content-Length'] end
+        if ce > #content then ce = #content end
+        dpart = content:sub(cs + 4, ce)
+    end
+    return hdr, dpart
+end
+
+
+function get_sip_invite_data(content)
+    local hdr, data = parse_sip_request(content)
+    print('data: '..data)
+    hdr.sdpdata = get_sdp_audio_info(data)
+    return hdr
+end
+
+function get_sip_data(content)
+    local hdr,data = parse_sip_request(content)
+    if hdr['Content-Type'] == 'application/sdp' then
+        hdr.sdpdata = get_sdp_audio_info(data)
+    else
+        hdr.data = data
+    end
+    return hdr
+end
+
+g_sessions = {}
+
+-- after INVITE - register a new SIP session
+function register_sip_session(ses)
+    g.sessions[ses.callId] = ses
+end
+
+-- SIP/20 200 OK after an invite, with SDP information
+function register_sip_session_confirmation(callId, seq, remoteSDPAddress)
+    local ses = g_sessions[callId]
+    if ses == nil then return end
+        
+end
+-- INVITE ACK (session begins)
+function register_sip_session_ack(callId, seq)
+end
+
+-- SIP BYE
+function register_sip_session_bye(callId, seq)
+end
+
+-- periodic session table cleanup
+function cleanup_sessions()
+end
+
+
+function process_sip_packet(tstamp, ip, isUdp, hdr, payload, payload_size, rawpacket)
+    local content = ffi.string(payload, payload_size)
+    local t, cmd = check_sip_command(content)
+    if not t then return end
+    local sip = get_sip_data(content)
+    local callId,contentType,cseq,sdp = sip['Call-ID'], sip['Content-Type'], sip['CSeq'], sip.sdpdata
     
+    if cmd == 'INVITE' then
+        print('INVITE Call ID: '..sip['Call-ID']..' From'..sip.From..' To:'..sip.To..'  Media at:'..sip.sdpdata.ip..':'..sip.sdpdata.port)
+    elseif cmd == 'BYE' then
+        print('BYE '..sip['Call-ID'])
+    elseif cmd == 'ACK' then
+        print('ACK '..sip['Call-ID'])
+    elseif cmd == 'SIP/2.0' then
+        print('SIP/2.0 '..sip.sipcommand_args..', Call ID:'..sip['Call-ID'])
+    end     
+    
+end
+
+function process_rtp_packet(tstamp, ip, isUdp, hdr, payload, payload_size, rawpacket)
+
 end
 
 function process_packet(tstamp, iphdr, isUdp, udphdr, payload, size_payload, rawpacket)
@@ -146,19 +248,10 @@ function process_packet(tstamp, iphdr, isUdp, udphdr, payload, size_payload, raw
         if udphdr.sport == 5060 or udphdr.dport == 5060 then 
             print(addrs(iphdr.saddr)..":"..udphdr.sport.." -> "..addrs(iphdr.daddr)..":"..udphdr.dport.." UDP ")
             --print(content)
-            local t, cmd = check_sip(content)
-            if t then
-                print("SIP "..cmd)
-                if cmd == "INVITE" or cmd == "SIP" or cmd == "ACK" then
-                    local tbl = content:lines()
-                    for i, v in ipairs(tbl) do
-                        print(i.."\t:"..v)
-                    end
-                end
-            end
+            local t, cmd = check_sip_command(content)
+            if t then process_sip_packet(tstamp, iphdr, isUdp, udphdr, payload, size_payload, rawpacket) end
         end
     else
-    
     end
 end
 
@@ -185,6 +278,7 @@ for pkt, ts, len in pc.next, pc do
         udphdr = ffi.cast("udp_header*", udphdr)
         local size_udp = ffi.sizeof("udp_header")
         local payload = data + 14 + ip_len + size_udp
+        --print('PAY:'..payload[0]..'.'..payload[1]..'.'..payload[2]..'.'..payload[3])
         local size_payload = ntohs(hdr.tlen) - (14 + size_udp);
         process_packet(ts, hdr, true, udphdr, payload, size_payload, pkt)
         
